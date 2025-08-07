@@ -8,129 +8,118 @@ import (
 )
 
 func main() {
-	// 定义命令行标志
-	pocFile := flag.String("poc", "", "POC YAML文件路径")
-	targetURL := flag.String("target", "", "目标网站URL")
-	debug := flag.Bool("debug", false, "启用调试模式")
-	search := flag.String("search", "", "搜索POC文件（根据关键词搜索）")
-	listPocs := flag.Bool("list", false, "列出所有可用的POC文件")
+	// 定义子命令
+	runCmd := flag.NewFlagSet("run", flag.ExitOnError)
+	runPocFile := runCmd.String("poc", "", "POC YAML文件路径 (必需)")
+	runTargetURL := runCmd.String("target", "", "目标网站URL (必需)")
+	runDebug := runCmd.Bool("debug", false, "启用调试模式")
 
-	// 解析命令行输入
-	flag.Parse()
+	searchCmd := flag.NewFlagSet("search", flag.ExitOnError)
+	searchKeyword := searchCmd.String("keyword", "", "用于搜索POC的关键词 (必需)")
+	searchTargetURL := searchCmd.String("target", "", "目标网站URL (必需)")
+	searchAll := searchCmd.Bool("all", false, "自动执行所有搜索到的POC")
+	searchDebug := searchCmd.Bool("debug", false, "启用调试模式")
 
-	// 如果使用列表功能
-	if *listPocs {
-		err := listAllPOCs()
-		if err != nil {
-			log.Fatalf("列出POC失败: %v", err)
-		}
-		return
+	listCmd := flag.NewFlagSet("list", flag.ExitOnError)
+
+	// 检查输入了哪个子命令
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
 	}
 
-	// 如果使用搜索功能
-	if *search != "" {
-		if *targetURL == "" {
-			fmt.Println("搜索模式需要指定目标URL:")
-			fmt.Println("Usage: ./go-poc --search <keyword> --target <url> [--debug]")
+	switch os.Args[1] {
+	case "run":
+		runCmd.Parse(os.Args[2:])
+		if *runPocFile == "" || *runTargetURL == "" {
+			fmt.Println("Usage: go run . run --poc <poc_file> --target <url> [--debug]")
+			os.Exit(1)
+		}
+		executeSinglePOC(*runPocFile, *runTargetURL, *runDebug)
+
+	case "search":
+		searchCmd.Parse(os.Args[2:])
+		if *searchKeyword == "" || *searchTargetURL == "" {
+			fmt.Println("Usage: go run . search --keyword <keyword> --target <url> [--all] [--debug]")
 			os.Exit(1)
 		}
 
-		// 搜索POC文件
-		results, err := searchPOCs(*search)
+		// 搜索POC
+		results, err := searchPOCs(*searchKeyword)
 		if err != nil {
 			log.Fatalf("搜索POC失败: %v", err)
 		}
 
 		if len(results) == 0 {
-			fmt.Printf("未找到包含关键词 '%s' 的POC文件\n", *search)
-			os.Exit(1)
+			fmt.Println("未找到匹配的POC。")
+			return
 		}
 
-		var selectedPOC *PocFileInfo
-		if len(results) == 1 {
-			// 只有一个结果，直接使用
-			selectedPOC = &results[0]
-			fmt.Printf("找到1个匹配的POC，直接执行: %s\n", selectedPOC.Name)
+		if *searchAll {
+			// 自动执行所有找到的POC
+			fmt.Printf("找到 %d 个匹配的POC，将全部自动执行...\n\n", len(results))
+			for i, pocInfo := range results {
+				fmt.Printf("--- (%d/%d) 开始执行: %s ---\n", i+1, len(results), pocInfo.Name)
+				executeSinglePOC(pocInfo.Path, *searchTargetURL, *searchDebug)
+				fmt.Printf("--- %s 执行完毕 ---\n\n", pocInfo.Name)
+			}
 		} else {
-			// 多个结果，让用户选择
-			var err error
-			selectedPOC, err = promptUserSelection(results)
+			// 手动选择
+			selectedPOC, err := promptUserSelection(results)
 			if err != nil {
 				log.Fatalf("选择POC失败: %v", err)
 			}
+			executeSinglePOC(selectedPOC.Path, *searchTargetURL, *searchDebug)
 		}
 
-		// 设置pocFile为选中的POC路径
-		*pocFile = selectedPOC.Path
-		fmt.Printf("\n执行POC: %s\n", selectedPOC.Name)
-	}
+	case "list":
+		listCmd.Parse(os.Args[2:])
+		if err := listAllPOCs(); err != nil {
+			log.Fatalf("列出POC失败: %v", err)
+		}
 
-	// 检查必需的参数
-	if *pocFile == "" || *targetURL == "" {
-		fmt.Println("Usage:")
-		fmt.Println("  执行指定POC: ./go-poc --poc <poc_file> --target <url> [--debug]")
-		fmt.Println("  搜索并执行POC: ./go-poc --search <keyword> --target <url> [--debug]")
-		fmt.Println("  列出所有POC: ./go-poc --list")
-		fmt.Println("\n参数说明:")
-		fmt.Println("  --poc      指定POC文件路径")
-		fmt.Println("  --search   根据关键词搜索POC文件")
-		fmt.Println("  --target   目标网站URL")
-		fmt.Println("  --debug    启用详细调试信息")
-		fmt.Println("  --list     列出所有可用的POC文件")
-		fmt.Println("\n示例:")
-		fmt.Println("  ./go-poc --poc xray/pocs/apache-ambari-default-password.yml --target http://example.com")
-		fmt.Println("  ./go-poc --search apache --target http://example.com")
-		fmt.Println("  ./go-poc --list")
+	default:
+		printUsage()
 		os.Exit(1)
 	}
+}
 
+// executeSinglePOC 封装了执行单个POC的逻辑
+func executeSinglePOC(pocFile, targetURL string, debug bool) {
 	// 读取并解析POC文件
-	poc, err := loadPOC(*pocFile)
+	poc, err := loadPOC(pocFile)
 	if err != nil {
-		log.Fatalf("加载POC文件失败: %v", err)
+		log.Printf("加载POC文件 %s 失败: %v", pocFile, err)
+		return
 	}
 
 	// 输出POC信息
 	fmt.Printf("POC名称: %s\n", poc.Name)
-	fmt.Printf("目标URL: %s\n", *targetURL)
-	fmt.Printf("传输协议: %s\n", poc.Transport)
-	fmt.Printf("规则数量: %d\n", len(poc.Rules))
-
-	if poc.Detail.Author != "" {
-		fmt.Printf("作者: %s\n", poc.Detail.Author)
-	}
-
-	if poc.Detail.Description != "" {
-		fmt.Printf("描述: %s\n", poc.Detail.Description)
-	}
-
-	if *debug {
+	fmt.Printf("目标URL: %s\n", targetURL)
+	if debug {
 		fmt.Println("调试模式已启用")
-		fmt.Printf("表达式: %s\n", poc.Expression)
-		fmt.Println("规则详情:")
-		for ruleName, rule := range poc.Rules {
-			fmt.Printf("  规则 %s:\n", ruleName)
-			fmt.Printf("    方法: %s\n", rule.Request.Method)
-			fmt.Printf("    路径: %s\n", rule.Request.Path)
-			if len(rule.Request.Headers) > 0 {
-				fmt.Printf("    请求头: %v\n", rule.Request.Headers)
-			}
-			if rule.Request.Body != "" {
-				fmt.Printf("    请求体: %s\n", rule.Request.Body)
-			}
-			fmt.Printf("    表达式: %s\n", rule.Expression)
-		}
 	}
 
-	fmt.Println("开始执行POC...")
-	success, err := executePOC(poc, *targetURL)
+	// 执行POC
+	success, err := executePOC(poc, targetURL, debug)
 	if err != nil {
-		log.Fatalf("POC执行失败: %v", err)
+		log.Printf("POC %s 执行失败: %v", poc.Name, err)
+		return
 	}
 
 	if success {
-		fmt.Println("POC执行成功，目标存在漏洞！")
+		fmt.Printf("【成功】POC %s 执行成功，目标可能存在漏洞！\n", poc.Name)
 	} else {
-		fmt.Println("POC执行完成，未发现漏洞。")
+		fmt.Printf("【失败】POC %s 执行完成，未发现漏洞。\n", poc.Name)
 	}
+}
+
+// printUsage 打印使用说明
+func printUsage() {
+	fmt.Println("Usage: go run . <command> [arguments]")
+	fmt.Println("\nCommands:")
+	fmt.Println("  run      执行单个POC文件")
+	fmt.Println("  search   根据关键词搜索并执行POC")
+	fmt.Println("  list     列出所有可用的POC")
+	fmt.Println("\nUse 'go run . <command> --help' for more information about a command.")
 }

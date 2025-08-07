@@ -12,13 +12,17 @@ import (
 )
 
 // executePOC 执行单个POC
-func executePOC(poc POC, targetURL string) (bool, error) {
+func executePOC(poc POC, targetURL string, debug bool) (bool, error) {
 	ruleResults := make(map[string]func() bool)
 
-	fmt.Println("=== 开始执行POC规则 ===")
+	if debug {
+		fmt.Println("=== 开始执行POC规则 ===")
+	}
 
 	for ruleName, rule := range poc.Rules {
-		fmt.Printf("\n--- 执行规则 %s ---\n", ruleName)
+		if debug {
+			fmt.Printf("\n--- 执行规则 %s ---\n", ruleName)
+		}
 
 		// 1. 构造HTTP请求
 		req, err := buildRequest(rule.Request, targetURL)
@@ -26,22 +30,22 @@ func executePOC(poc POC, targetURL string) (bool, error) {
 			return false, fmt.Errorf("规则 '%s' 请求构建失败: %v", ruleName, err)
 		}
 
-		// 输出请求信息
-		fmt.Printf("请求方法: %s\n", req.Method)
-		fmt.Printf("请求URL: %s\n", req.URL.String())
-		if len(req.Header) > 0 {
-			fmt.Println("请求头:")
-			for k, v := range req.Header {
-				fmt.Printf("  %s: %s\n", k, strings.Join(v, ", "))
+		if debug {
+			// 输出请求信息
+			fmt.Printf("请求方法: %s\n", req.Method)
+			fmt.Printf("请求URL: %s\n", req.URL.String())
+			if len(req.Header) > 0 {
+				fmt.Println("请求头:")
+				for k, v := range req.Header {
+					fmt.Printf("  %s: %s\n", k, strings.Join(v, ", "))
+				}
 			}
-		}
-		if req.Body != nil && req.ContentLength > 0 {
-			// 读取请求体用于显示（需要重新创建以便发送）
-			bodyBytes, _ := io.ReadAll(req.Body)
-			if len(bodyBytes) > 0 {
-				fmt.Printf("请求体: %s\n", string(bodyBytes))
-				// 重新创建请求体
-				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			if req.Body != nil {
+				bodyBytes, _ := io.ReadAll(req.Body)
+				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // 重新填充body
+				if len(bodyBytes) > 0 {
+					fmt.Printf("请求体: %s\n", string(bodyBytes))
+				}
 			}
 		}
 
@@ -56,10 +60,14 @@ func executePOC(poc POC, targetURL string) (bool, error) {
 			},
 		}
 
-		fmt.Println("发送请求...")
+		if debug {
+			fmt.Println("发送请求...")
+		}
 		resp, err := client.Do(req)
 		if err != nil {
-			fmt.Printf("请求失败: %v\n", err)
+			if debug {
+				fmt.Printf("请求失败: %v\n", err)
+			}
 			return false, fmt.Errorf("规则 '%s' 请求失败: %v", ruleName, err)
 		}
 		defer resp.Body.Close()
@@ -70,33 +78,41 @@ func executePOC(poc POC, targetURL string) (bool, error) {
 			return false, fmt.Errorf("规则 '%s' 读取响应体失败: %v", ruleName, err)
 		}
 
-		// 输出响应信息
-		fmt.Printf("响应状态: %d %s\n", resp.StatusCode, resp.Status)
-		if len(resp.Header) > 0 {
-			fmt.Println("响应头:")
-			for k, v := range resp.Header {
-				fmt.Printf("  %s: %s\n", k, strings.Join(v, ", "))
+		if debug {
+			// 输出响应信息
+			fmt.Printf("响应状态: %d %s\n", resp.StatusCode, resp.Status)
+			if len(resp.Header) > 0 {
+				fmt.Println("响应头:")
+				for k, v := range resp.Header {
+					fmt.Printf("  %s: %s\n", k, strings.Join(v, ", "))
+				}
 			}
-		}
-		fmt.Printf("响应体长度: %d 字节\n", len(respBody))
-		if len(respBody) > 0 {
-			bodyStr := string(respBody)
-			if len(bodyStr) > 500 {
-				fmt.Printf("响应体预览: %s...\n", bodyStr[:500])
-			} else {
-				fmt.Printf("响应体: %s\n", bodyStr)
+			fmt.Printf("响应体长度: %d 字节\n", len(respBody))
+			if len(respBody) > 0 {
+				bodyStr := string(respBody)
+				if len(bodyStr) > 500 {
+					fmt.Printf("响应体预览: %s...\n", bodyStr[:500])
+				} else {
+					fmt.Printf("响应体: %s\n", bodyStr)
+				}
 			}
 		}
 
 		// 4. 执行规则表达式
-		fmt.Printf("执行表达式: %s\n", rule.Expression)
+		if debug {
+			fmt.Printf("执行表达式: %s\n", rule.Expression)
+		}
 		result, err := evaluateCELExpression(rule.Expression, resp, respBody)
 		if err != nil {
-			fmt.Printf("表达式执行失败: %v\n", err)
+			if debug {
+				fmt.Printf("表达式执行失败: %v\n", err)
+			}
 			return false, fmt.Errorf("规则 '%s' 表达式执行失败: %v", ruleName, err)
 		}
 
-		fmt.Printf("规则 %s 执行结果: %t\n", ruleName, result)
+		if debug {
+			fmt.Printf("规则 %s 执行结果: %t\n", ruleName, result)
+		}
 
 		// 保存规则结果为函数
 		ruleResult := result
@@ -104,17 +120,23 @@ func executePOC(poc POC, targetURL string) (bool, error) {
 	}
 
 	// 5. 执行顶层表达式
-	fmt.Printf("\n=== 执行顶层表达式 ===\n")
-	fmt.Printf("顶层表达式: %s\n", poc.Expression)
+	if debug {
+		fmt.Printf("\n=== 执行顶层表达式 ===\n")
+		fmt.Printf("顶层表达式: %s\n", poc.Expression)
+	}
 
 	finalResult, err := evaluateTopLevelExpression(poc.Expression, ruleResults)
 	if err != nil {
-		fmt.Printf("顶层表达式执行失败: %v\n", err)
+		if debug {
+			fmt.Printf("顶层表达式执行失败: %v\n", err)
+		}
 		return false, fmt.Errorf("顶层表达式执行失败: %v", err)
 	}
 
-	fmt.Printf("最终结果: %t\n", finalResult)
-	fmt.Println("=== POC执行完成 ===")
+	if debug {
+		fmt.Printf("最终结果: %t\n", finalResult)
+		fmt.Println("=== POC执行完成 ===")
+	}
 
 	return finalResult, nil
 }
@@ -187,11 +209,15 @@ func evaluateExpression(expr string, responseObj map[string]interface{}) (bool, 
 
 	// response.body.bcontains(b"text")
 	if strings.Contains(expr, "response.body.bcontains") {
-		re := regexp.MustCompile(`response\.body\.bcontains\(b"([^"]+)"\)`)
+		// Updated regex to handle escaped quotes
+		re := regexp.MustCompile(`response\.body\.bcontains\(b"((?:\\.|[^"])*)"\)`)
 		matches := re.FindStringSubmatch(expr)
 		if len(matches) > 1 {
+			// The captured string might contain escaped quotes, e.g., \"
+			// We need to unescape it before searching.
+			contentToSearch := strings.ReplaceAll(matches[1], `\"`, `"`)
 			bodyStr := responseObj["body"].(string)
-			return strings.Contains(bodyStr, matches[1]), nil
+			return strings.Contains(bodyStr, contentToSearch), nil
 		}
 	}
 
