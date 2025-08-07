@@ -37,7 +37,27 @@ func searchPOCs(keyword string) ([]PocFileInfo, error) {
 			fileName := strings.ToLower(info.Name())
 			searchKeyword := strings.ToLower(keyword)
 
+			// 默认不匹配
+			matched := false
+
+			// 首先检查文件名是否匹配
 			if strings.Contains(fileName, searchKeyword) {
+				matched = true
+			}
+
+			// 如果文件名不匹配，则检查文件内容
+			if !matched {
+				if content, err := os.ReadFile(path); err == nil {
+					contentStr := strings.ToLower(string(content))
+					if strings.Contains(contentStr, searchKeyword) {
+						matched = true
+					}
+				}
+				// 如果读取文件失败，我们忽略错误继续处理其他文件
+			}
+
+			// 如果匹配成功（文件名或内容匹配），则添加到结果中
+			if matched {
 				// 尝试读取POC文件获取更多信息
 				pocInfo := PocFileInfo{
 					Name: info.Name(),
